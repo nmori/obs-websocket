@@ -213,8 +213,28 @@ void WebSocketServer::ProcessMessage(SessionPtr session, WebSocketServer::Proces
 			json requestData = payloadData["requestData"];
 			Request request(requestType, requestData);
 
-			RequestHandler requestHandler(session);
-			requestResult = requestHandler.ProcessRequest(request);
+			// ソース操作系リクエストの場合は競合を避けるための同期化を行う
+			// 例：Set系、Create系、Move系、Delete系のリクエスト
+			static std::mutex source_operation_mutex;
+			bool isSourceModifyingRequest = 
+				requestType.find("Set") == 0 ||
+				requestType.find("Create") == 0 ||
+				requestType.find("Move") == 0 ||
+				requestType.find("Delete") == 0 ||
+				requestType.find("Reorder") != std::string::npos ||
+				requestType.find("Transform") != std::string::npos ||
+				requestType.find("Crop") != std::string::npos;
+
+			if (isSourceModifyingRequest) {
+				// ソース操作系リクエストに対してはミューテックスで保護
+				std::lock_guard<std::mutex> lock(source_operation_mutex);
+				RequestHandler requestHandler(session);
+				requestResult = requestHandler.ProcessRequest(request);
+			} else {
+				// 通常のリクエストは従来通り処理
+				RequestHandler requestHandler(session);
+				requestResult = requestHandler.ProcessRequest(request);
+			}
 		} else {
 			requestResult = RequestResult::Error(RequestStatus::NotReady, "OBS is not ready to perform the request.");
 		}
@@ -359,7 +379,30 @@ void WebSocketServer::BroadcastEvent(uint64_t requiredIntent, const std::string 
 	if (!_server.is_listening() || !_obsReady)
 		return;
 
-	_threadPool.start(Utils::Compat::CreateFunctionRunnable([=]() {
+	// ソース変更に関連するイベントは同期的に処理
+	static std::mutex source_event_mutex;
+	bool isSourceChangeEvent = 
+		eventType.find("SceneItem") != std::string::npos || 
+		eventType.find("Source") != std::string::npos ||
+		eventType.find("Input") != std::string::npos ||
+		eventType.find("Scene") != std::string::npos;
+
+	if (isSourceChangeEvent) {
+		// ソース変更イベントは同期的に処理
+		std::lock_guard<std::mutex> lock(source_event_mutex);
+		ProcessBroadcastEvent(requiredIntent, eventType, eventData, rpcVersion);
+	} else {
+		// 他のイベントは従来通り非同期で処理
+		_threadPool.start(Utils::Compat::CreateFunctionRunnable([=]() {
+			ProcessBroadcastEvent(requiredIntent, eventType, eventData, rpcVersion);
+		}));
+	}
+}
+
+// イベント送信の実際の処理を別メソッドに分離
+void WebSocketServer::ProcessBroadcastEvent(uint64_t requiredIntent, const std::string &eventType, const json &eventData,
+					uint8_t rpcVersion)
+{
 		// Populate message object
 		json eventMessage;
 		eventMessage["op"] = 5;
@@ -407,5 +450,4 @@ void WebSocketServer::BroadcastEvent(uint64_t requiredIntent, const std::string 
 		lock.unlock();
 		if (IsDebugEnabled() && (EventSubscription::All & requiredIntent) != 0) // Don't log high volume events
 			blog(LOG_INFO, "[WebSocketServer::BroadcastEvent] Outgoing event:\n%s", eventMessage.dump(2).c_str());
-	}));
 }

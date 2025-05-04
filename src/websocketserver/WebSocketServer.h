@@ -57,6 +57,8 @@ public:
 	void InvalidateSession(websocketpp::connection_hdl hdl);
 	void BroadcastEvent(uint64_t requiredIntent, const std::string &eventType, const json &eventData = nullptr,
 			    uint8_t rpcVersion = 0);
+	void ProcessBroadcastEvent(uint64_t requiredIntent, const std::string &eventType, const json &eventData,
+					uint8_t rpcVersion);
 	inline void SetObsReady(bool ready) { _obsReady = ready; }
 	inline bool IsListening() { return _server.is_listening(); }
 	std::vector<WebSocketSessionState> GetWebSocketSessions();
