@@ -232,7 +232,7 @@ RequestResult RequestHandler::SetCurrentSceneTransitionSettings(const Request &r
 	else
 		obs_source_reset_settings(transition, newSettings);
 
-	obs_source_update_properties(transition);
+	Utils::Obs::ActionHelper::UpdateSourceProperties(transition);
 
 	return RequestResult::Success();
 }

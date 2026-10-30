@@ -16,6 +16,9 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
+#include <QApplication>
+#include <QTimer>
+
 #include "Obs.h"
 #include "plugin-macros.generated.h"
 
@@ -117,4 +120,44 @@ void Utils::Obs::ActionHelper::SetSourceFilterIndex(obs_source_t *source, obs_so
 		else
 			currentIndex--;
 	}
+}
+
+// Sources waiting for a properties UI refresh. Only accessed on the UI thread.
+static std::vector<OBSWeakSource> pendingPropertiesUpdates;
+
+static void FlushPendingPropertiesUpdates()
+{
+	// A modal dialog (font, color, path picker...) opened from a properties window runs a nested event loop. Reloading
+	// that properties window in the meantime destroys the widgets the dialog returns to, which crashes OBS.
+	if (QApplication::activeModalWidget()) {
+		QTimer::singleShot(100, qApp, FlushPendingPropertiesUpdates);
+		return;
+	}
+
+	auto weakSources = std::move(pendingPropertiesUpdates);
+	pendingPropertiesUpdates.clear();
+	for (auto &weakSource : weakSources) {
+		OBSSourceAutoRelease source = obs_weak_source_get_source(weakSource);
+		if (source)
+			obs_source_update_properties(source);
+	}
+}
+
+// Tells any open properties windows of the source to perform a UI refresh, once no modal dialog is open
+void Utils::Obs::ActionHelper::UpdateSourceProperties(obs_source_t *source)
+{
+	OBSWeakSourceAutoRelease weakSource = obs_source_get_weak_source(source);
+	QMetaObject::invokeMethod(
+		qApp,
+		[weakSource = OBSWeakSource(weakSource)]() {
+			for (auto &pending : pendingPropertiesUpdates)
+				if (pending == weakSource)
+					return;
+
+			bool scheduled = !pendingPropertiesUpdates.empty();
+			pendingPropertiesUpdates.push_back(weakSource);
+			if (!scheduled)
+				FlushPendingPropertiesUpdates();
+		},
+		Qt::QueuedConnection);
 }

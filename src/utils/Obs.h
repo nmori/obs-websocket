@@ -289,6 +289,7 @@ namespace Utils {
 			CreateSourceFilter(obs_source_t *source, std::string filterName, std::string filterKind,
 					   obs_data_t *filterSettings); // Increments source ref. Use OBSSourceAutoRelease
 			void SetSourceFilterIndex(obs_source_t *source, obs_source_t *filter, size_t index);
+			void UpdateSourceProperties(obs_source_t *source);
 		}
 	}
 }

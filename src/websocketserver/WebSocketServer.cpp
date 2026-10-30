@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <chrono>
 #include <thread>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -152,7 +153,14 @@ void WebSocketServer::Stop()
 	}
 	lock.unlock();
 
-	_threadPool.waitForDone();
+	// Requests may be blocked waiting for the UI thread (see RequestHandler::ProcessRequest). If we are the UI thread,
+	// keep running the queued UI tasks while waiting, otherwise the workers and this thread would deadlock.
+	if (obs_in_task_thread(OBS_TASK_UI)) {
+		while (!_threadPool.waitForDone(10))
+			QCoreApplication::sendPostedEvents(QCoreApplication::instance(), QEvent::MetaCall);
+	} else {
+		_threadPool.waitForDone();
+	}
 
 	// This can delay the thread that it is running on. Bad but kinda required.
 	while (_sessions.size() > 0)

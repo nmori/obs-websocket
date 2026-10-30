@@ -45,6 +45,8 @@ public:
 	typedef std::function<void(bool)> ObsReadyCallback; // bool ready
 	inline void SetObsReadyCallback(ObsReadyCallback cb) { _obsReadyCallback = cb; }
 
+	inline bool IsObsReady() { return _obsReady; }
+
 private:
 	EventCallback _eventCallback;
 	ObsReadyCallback _obsReadyCallback;

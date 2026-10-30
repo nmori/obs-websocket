@@ -340,7 +340,7 @@ RequestResult RequestHandler::SetSourceFilterSettings(const Request &request)
 	else
 		obs_source_reset_settings(pair.filter, newSettings);
 
-	obs_source_update_properties(pair.filter);
+	Utils::Obs::ActionHelper::UpdateSourceProperties(pair.filter);
 
 	return RequestResult::Success();
 }

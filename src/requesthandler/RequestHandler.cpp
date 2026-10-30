@@ -21,7 +21,41 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/profiler.hpp>
 #endif
 
+#include <chrono>
+#include <thread>
+#include <QApplication>
+#include <QWidget>
+
 #include "RequestHandler.h"
+#include "../eventhandler/EventHandler.h"
+
+// Requests which do not touch frontend state and may block for a long time, so they are not moved to the UI thread
+const std::unordered_set<std::string> RequestHandler::_callingThreadRequests{
+	"GetVersion", "Sleep", "CallVendorRequest", "GetSourceScreenshot", "SaveSourceScreenshot",
+};
+
+// Requests which make OBS rebuild or close properties and filters windows (filter list changes, source removal...)
+const std::unordered_set<std::string> RequestHandler::_propertiesRebuildingRequests{
+	"CreateSourceFilter", "RemoveSourceFilter",    "SetSourceFilterIndex",      "RemoveInput",
+	"RemoveScene",        "CreateSceneCollection", "SetCurrentSceneCollection",
+};
+
+// True while a modal dialog (font, color, file picker, message box...) opened from a window containing a properties view
+// is running its nested event loop. Rebuilding or closing that window meanwhile destroys the widgets the dialog returns
+// to, which crashes OBS once the dialog is closed.
+static bool IsPropertiesDialogOpen()
+{
+	QWidget *modal = QApplication::activeModalWidget();
+	if (!modal || !modal->parentWidget())
+		return false;
+
+	QWidget *window = modal->parentWidget()->window();
+	for (QWidget *child : window->findChildren<QWidget *>())
+		if (child->inherits("OBSPropertiesView") && child->window() == window)
+			return true;
+
+	return false;
+}
 
 const std::unordered_map<std::string, RequestMethodHandler> RequestHandler::_handlerMap{
 	// General
@@ -226,7 +260,59 @@ RequestResult RequestHandler::ProcessRequest(const Request &request)
 		return RequestResult::Error(RequestStatus::UnknownRequestType, "Your request type is not valid.");
 	}
 
-	return std::bind(handler, this, std::placeholders::_1)(request);
+	// The graphics and audio threads must never block on the UI thread, and the UI thread can run the request directly
+	if (_callingThreadRequests.count(request.RequestType) || obs_in_task_thread(OBS_TASK_UI) ||
+	    obs_in_task_thread(OBS_TASK_GRAPHICS) || obs_in_task_thread(OBS_TASK_AUDIO))
+		return std::bind(handler, this, std::placeholders::_1)(request);
+
+	// Many obs_frontend_* functions read Qt widgets directly (scene list, transitions, profiles...), so they are only safe
+	// on the UI thread. Running the request there also serializes it with user operations in the OBS UI, such as removing
+	// a scene or changing the scene collection, which would otherwise free objects while this request is using them.
+	struct UiTaskData {
+		RequestHandler *self;
+		RequestMethodHandler handler;
+		const Request *request;
+		bool waitForPropertiesDialog;
+		bool deferred;
+		RequestResult result;
+	} data{this, handler, &request, _propertiesRebuildingRequests.count(request.RequestType) > 0, false, {}};
+
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	while (true) {
+		data.deferred = false;
+		obs_queue_task(
+			OBS_TASK_UI,
+			[](void *param) {
+				auto data = static_cast<UiTaskData *>(param);
+
+				// OBS may have become not ready (scene collection change, shutdown) while this task was queued
+				auto eventHandler = GetEventHandler();
+				if (!eventHandler || !eventHandler->IsObsReady()) {
+					data->result = RequestResult::Error(RequestStatus::NotReady,
+									    "OBS is not ready to perform the request.");
+					return;
+				}
+
+				if (data->waitForPropertiesDialog && IsPropertiesDialogOpen()) {
+					data->deferred = true;
+					return;
+				}
+
+				data->result = std::bind(data->handler, data->self, std::placeholders::_1)(*data->request);
+			},
+			&data, true);
+
+		if (!data.deferred)
+			return data.result;
+
+		if (std::chrono::steady_clock::now() >= deadline)
+			return RequestResult::Error(
+				RequestStatus::NotReady,
+				"A dialog is open in an OBS properties or filters window. Close it and try again.");
+
+		// Wait outside of the UI thread so the user can finish with the dialog
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	}
 }
 
 std::vector<std::string> RequestHandler::GetRequestList()

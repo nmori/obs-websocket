@@ -373,7 +373,7 @@ RequestResult RequestHandler::SetInputSettings(const Request &request)
 		obs_source_reset_settings(input, newSettings);
 
 	// Tells any open source properties windows to perform a UI refresh
-	obs_source_update_properties(input);
+	Utils::Obs::ActionHelper::UpdateSourceProperties(input);
 
 	return RequestResult::Success();
 }

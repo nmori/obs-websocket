@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <unordered_map>
+#include <unordered_set>
 #include <obs.hpp>
 #include <obs-frontend-api.h>
 
@@ -224,4 +225,6 @@ private:
 
 	SessionPtr _session;
 	static const std::unordered_map<std::string, RequestMethodHandler> _handlerMap;
+	static const std::unordered_set<std::string> _callingThreadRequests;
+	static const std::unordered_set<std::string> _propertiesRebuildingRequests;
 };
